@@ -58,6 +58,21 @@ describe('xsrf', function() {
     });
   });
 
+  // The cookie lookup used to build a RegExp out of `xsrfCookieName`, so a
+  // pattern-like name matched - and leaked - an unrelated cookie.
+  it('should not treat regex-like xsrfCookieName as a pattern', function(done) {
+    document.cookie = axios.defaults.xsrfCookieName + '=12345';
+
+    axios('/foo', {
+      xsrfCookieName: 'XSRF.*'
+    });
+
+    getAjaxRequest().then(function(request) {
+      expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+      done();
+    });
+  });
+
   it('should not set xsrf header for cross origin', function(done) {
     document.cookie = axios.defaults.xsrfCookieName + '=12345';
 
