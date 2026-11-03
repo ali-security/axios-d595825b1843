@@ -518,6 +518,43 @@ describe('Prototype Pollution Protection', function() {
       }, 100);
     });
 
+    // `mergeConfig` hands the adapter a null-prototype config, but a request
+    // interceptor that clones it onto a plain `{}` puts `Object.prototype` back
+    // on the chain - `paramsSerializer` has to be read as an own property or a
+    // polluted one rewrites the query string of every request.
+    it('should not use a paramsSerializer inherited from Object.prototype after config cloning', function(done) {
+      var serializerCalled = false;
+
+      Object.prototype.paramsSerializer = function pollutedSerializer() {
+        serializerCalled = true;
+        return 'polluted=1';
+      };
+
+      var instance = axios.create();
+
+      instance.interceptors.request.use(function(config) {
+        var clone = {};
+
+        for (var key in config) {
+          if (Object.prototype.hasOwnProperty.call(config, key)) {
+            clone[key] = config[key];
+          }
+        }
+
+        return clone;
+      });
+
+      instance.get('/foo', {params: {safe: '1'}});
+
+      setTimeout(function() {
+        var request = jasmine.Ajax.requests.mostRecent();
+
+        expect(serializerCalled).toBe(false);
+        expect(request.url).toEqual('/foo?safe=1');
+        done();
+      }, 100);
+    });
+
     it('should not prefix the request url with a baseURL inherited from Object.prototype', function(done) {
       Object.prototype.baseURL = 'http://attacker.example.com';
 

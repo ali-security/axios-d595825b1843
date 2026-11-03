@@ -16,6 +16,7 @@ describe('Prototype Pollution Protection (node)', function () {
     delete Object.prototype.get;
     delete Object.prototype.set;
     delete Object.prototype.post;
+    delete Object.prototype.data;
   }
 
   function stubAdapter(store) {
@@ -344,6 +345,56 @@ describe('Prototype Pollution Protection (node)', function () {
 
       assert.ok(axiosError instanceof AxiosError);
       assert.strictEqual(axiosError.message, 'boom');
+    });
+  });
+
+  describe('bodyless request aliases', function () {
+    // `get`/`delete`/`head`/`options` used to forward `(config || {}).data`,
+    // which resolves through the prototype chain: a polluted
+    // `Object.prototype.data` was therefore attached as the request body of
+    // every bodyless request the application made.
+    it('should not copy inherited data into bodyless request aliases', function (done) {
+      var adapterCalled = false;
+      var seenData = 'unset';
+      var promise = null;
+      var thrown = null;
+
+      Object.prototype.data = 'polluted';
+
+      try {
+        promise = axios.get('/users', {
+          adapter: function adapter(config) {
+            adapterCalled = true;
+            seenData = config.data;
+
+            return Promise.resolve({
+              data: null,
+              status: 200,
+              statusText: 'OK',
+              headers: {},
+              config: config
+            });
+          }
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      // Restore synchronously: without request interceptors the adapter runs
+      // inline, so everything under test has already happened and the polluted
+      // prototype must not outlive it into mocha's own internals.
+      clearPollution();
+
+      if (thrown) {
+        done(thrown);
+        return;
+      }
+
+      promise.then(function () {
+        assert.strictEqual(adapterCalled, true);
+        assert.strictEqual(seenData, undefined);
+        done();
+      }, done);
     });
   });
 });

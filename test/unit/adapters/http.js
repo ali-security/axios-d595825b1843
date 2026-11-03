@@ -59,6 +59,8 @@ describe('supports http with nodejs', function () {
     delete Object.prototype.get;
     delete Object.prototype.post;
     delete Object.prototype.set;
+    delete Object.prototype.serialize;
+    delete Object.prototype.encode;
   }
 
   // Defensive: clear before each test in case another suite left pollution.
@@ -476,6 +478,54 @@ describe('supports http with nodejs', function () {
         var base64 = Buffer.from('foo:bar', 'utf8').toString('base64');
         assert.equal(res.data, 'Basic ' + base64);
         done();
+      });
+    });
+  });
+
+  it('should normalize nullish own basic auth credentials to empty strings', function (done) {
+    server = http.createServer(function (req, res) {
+      res.end(req.headers.authorization);
+    }).listen(4444, function () {
+      axios.get('http://localhost:4444/', {
+        auth: {
+          username: undefined,
+          password: null
+        }
+      }).then(function (res) {
+        assert.equal(res.data, 'Basic ' + Buffer.from(':', 'utf8').toString('base64'));
+        done();
+      }).catch(done);
+    });
+  });
+
+  // A request interceptor that clones the config onto a plain `{}` reintroduces
+  // the prototype chain, so `config.auth` / `auth.username` / `auth.password`
+  // have to be read as own properties or the polluted values are sent as
+  // credentials to the server.
+  it('should not use inherited basic auth credentials after config cloning', function (done) {
+    server = http.createServer(function (req, res) {
+      res.end(req.headers.authorization || '');
+    }).listen(4444, function () {
+      Object.prototype.username = 'polluted-user';
+      Object.prototype.password = 'polluted-pass';
+
+      var instance = axios.create();
+      var polluted = 'Basic ' + Buffer.from('polluted-user:polluted-pass', 'utf8').toString('base64');
+
+      instance.interceptors.request.use(function (config) {
+        var clone = Object.assign({}, config);
+        clone.auth = {};
+        return clone;
+      });
+
+      instance.get('http://localhost:4444/').then(function (res) {
+        clearPrototypePollution();
+        assert.notStrictEqual(res.data, polluted);
+        assert.equal(res.data, 'Basic ' + Buffer.from(':', 'utf8').toString('base64'));
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
       });
     });
   });
@@ -2076,6 +2126,86 @@ describe('supports http with nodejs', function () {
       axios.get('http://localhost:4444/x').then(function (res) {
         clearPrototypePollution();
         assert.equal(res.data, '/x');
+        assert.equal(serializerCalled, false, 'should not use an inherited paramsSerializer');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  // `mergeConfig` hands the adapter a null-prototype config, but a request
+  // interceptor that clones it onto a plain `{}` puts `Object.prototype` back
+  // on the chain - every config field the adapter reads has to be an own-property
+  // read to stay safe there.
+  it('should not use inherited proxy after request interceptor clones config', function (done) {
+    var proxyRequests = 0;
+
+    process.env.no_proxy = 'localhost,127.0.0.1,::1';
+
+    server = http.createServer(function (req, res) {
+      res.end('target');
+    }).listen(4444, function () {
+      proxy = http.createServer(function (request, response) {
+        proxyRequests += 1;
+        response.end('proxy');
+      }).listen(4000, function () {
+        Object.prototype.proxy = {
+          protocol: 'http',
+          host: 'localhost',
+          port: 4000
+        };
+
+        var instance = axios.create();
+
+        instance.interceptors.request.use(function (config) {
+          var clone = Object.assign({}, config);
+          clone.headers = Object.assign({}, config.headers);
+          return clone;
+        });
+
+        instance.get('http://localhost:4444/secret', {
+          headers: {
+            Authorization: 'Bearer test'
+          }
+        }).then(function (res) {
+          clearPrototypePollution();
+          assert.equal(res.data, 'target');
+          assert.equal(proxyRequests, 0, 'should not route the request through an inherited proxy');
+          done();
+        }).catch(function (err) {
+          clearPrototypePollution();
+          done(err);
+        });
+      });
+    });
+  });
+
+  it('should not use inherited paramsSerializer after request interceptor clones config', function (done) {
+    var serializerCalled = false;
+
+    server = http.createServer(function (req, res) {
+      res.end(req.url);
+    }).listen(4444, function () {
+      Object.prototype.paramsSerializer = function pollutedSerializer() {
+        serializerCalled = true;
+        return 'polluted=1';
+      };
+
+      var instance = axios.create();
+
+      instance.interceptors.request.use(function (config) {
+        return Object.assign({}, config);
+      });
+
+      instance.get('http://localhost:4444/demo', {
+        params: {
+          safe: '1'
+        }
+      }).then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, '/demo?safe=1');
         assert.equal(serializerCalled, false, 'should not use an inherited paramsSerializer');
         done();
       }).catch(function (err) {
