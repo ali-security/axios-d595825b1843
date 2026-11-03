@@ -85,6 +85,7 @@ export interface AxiosRequestConfig<D = any> {
   timeout?: number;
   timeoutErrorMessage?: string;
   withCredentials?: boolean;
+  withXSRFToken?: boolean | ((config: AxiosRequestConfig) => boolean | undefined);
   adapter?: AxiosAdapter;
   auth?: AxiosBasicCredentials;
   responseType?: ResponseType;
