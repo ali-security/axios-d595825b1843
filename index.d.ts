@@ -166,6 +166,7 @@ export class AxiosError<T = unknown, D = any> extends Error {
   static readonly ERR_BAD_RESPONSE = "ERR_BAD_RESPONSE";
   static readonly ERR_BAD_REQUEST = "ERR_BAD_REQUEST";
   static readonly ERR_CANCELED = "ERR_CANCELED";
+  static readonly ERR_FORM_DATA_DEPTH_EXCEEDED = "ERR_FORM_DATA_DEPTH_EXCEEDED";
   static readonly ECONNABORTED = "ECONNABORTED";
   static readonly ETIMEDOUT = "ETIMEDOUT";
 }
