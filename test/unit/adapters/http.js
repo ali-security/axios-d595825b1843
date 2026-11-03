@@ -22,6 +22,34 @@ describe('supports http with nodejs', function () {
     delete Object.prototype.proxy;
     delete Object.prototype.socketPath;
     delete Object.prototype.allowedSocketPaths;
+    delete Object.prototype.transport;
+    delete Object.prototype.baseURL;
+    delete Object.prototype.url;
+    delete Object.prototype.allowAbsoluteUrls;
+    delete Object.prototype.beforeRedirect;
+    delete Object.prototype.config;
+    delete Object.prototype.insecureHTTPParser;
+    delete Object.prototype.httpAgent;
+    delete Object.prototype.httpsAgent;
+    delete Object.prototype.adapter;
+    delete Object.prototype.params;
+    delete Object.prototype.paramsSerializer;
+    delete Object.prototype.method;
+    delete Object.prototype.data;
+    delete Object.prototype.headers;
+    delete Object.prototype.decompress;
+    delete Object.prototype.responseType;
+    delete Object.prototype.maxRedirects;
+    delete Object.prototype.maxContentLength;
+    delete Object.prototype.maxBodyLength;
+    delete Object.prototype.timeout;
+    delete Object.prototype.timeoutErrorMessage;
+    delete Object.prototype.transitional;
+    delete Object.prototype.transformRequest;
+    delete Object.prototype.transformResponse;
+    delete Object.prototype.validateStatus;
+    delete Object.prototype.env;
+    delete Object.prototype.polluted;
   }
 
   // Defensive: clear before each test in case another suite left pollution.
@@ -1438,6 +1466,450 @@ describe('supports http with nodejs', function () {
           clearPrototypePollution();
           done(err);
         });
+      });
+    });
+  });
+
+  it('should not use a transport inherited from Object.prototype', function (done) {
+    var transportCalls = 0;
+
+    server = http.createServer(function (req, res) {
+      res.end('direct');
+    }).listen(4444, function () {
+      Object.prototype.transport = {
+        request: function () {
+          transportCalls += 1;
+          return http.request.apply(http, arguments);
+        }
+      };
+
+      axios.get('http://localhost:4444/', {
+        maxRedirects: 0
+      }).then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'direct');
+        assert.equal(transportCalls, 0, 'should not issue the request through an inherited transport');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  // GHSA-q8qp-cvcw-x6jj: `auth`, `baseURL`, `socketPath`, `beforeRedirect` and
+  // `insecureHTTPParser` were read through the prototype chain, so a polluted
+  // `Object.prototype.<key>` was treated as if the caller had supplied it.
+  it('should not send an Authorization header inherited from Object.prototype', function (done) {
+    server = http.createServer(function (req, res) {
+      res.setHeader('Content-Type', 'text/plain');
+      res.end(req.headers.authorization || 'no-auth');
+    }).listen(4444, function () {
+      Object.prototype.auth = { username: 'attacker', password: 'exfil' };
+
+      axios.get('http://localhost:4444/api').then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'no-auth', 'should not send inherited credentials');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not use credential fields inherited from Object.prototype', function (done) {
+    server = http.createServer(function (req, res) {
+      res.setHeader('Content-Type', 'text/plain');
+      res.end(req.headers.authorization || 'no-auth');
+    }).listen(4444, function () {
+      Object.prototype.username = 'attacker';
+      Object.prototype.password = 'exfil';
+
+      axios.get('http://localhost:4444/api', {
+        auth: {}
+      }).then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'Basic ' + Buffer.from(':', 'utf8').toString('base64'));
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not prefix an absolute url with a baseURL inherited from Object.prototype', function (done) {
+    var hijackHits = 0;
+
+    server = http.createServer(function (req, res) {
+      res.end('target');
+    }).listen(4444, function () {
+      proxy = http.createServer(function (req, res) {
+        hijackHits += 1;
+        res.end('hijacked');
+      }).listen(4000, function () {
+        Object.prototype.baseURL = 'http://localhost:4000';
+
+        axios.get('http://localhost:4444/api', {
+          allowAbsoluteUrls: false
+        }).then(function (res) {
+          clearPrototypePollution();
+          assert.equal(res.data, 'target');
+          assert.equal(hijackHits, 0, 'should not route the request through an inherited baseURL');
+          done();
+        }).catch(function (err) {
+          clearPrototypePollution();
+          done(err);
+        });
+      });
+    });
+  });
+
+  it('should not resolve a relative url against a baseURL inherited from Object.prototype', function (done) {
+    var hijackHits = 0;
+
+    proxy = http.createServer(function (req, res) {
+      hijackHits += 1;
+      res.end('hijacked');
+    }).listen(4000, function () {
+      Object.prototype.baseURL = 'http://localhost:4000';
+
+      axios.get('/api', { timeout: 5000 }).then(function (res) {
+        return res.data;
+      }, function () {
+        return null;
+      }).then(function (data) {
+        clearPrototypePollution();
+        assert.equal(hijackHits, 0, 'should not route a relative request through an inherited baseURL');
+        assert.notEqual(data, 'hijacked');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not connect to a socketPath inherited from Object.prototype', function (done) {
+    server = http.createServer(function (req, res) {
+      res.end('direct');
+    }).listen(4444, function () {
+      Object.prototype.socketPath = path.join(__dirname, 'axios-should-never-be-used.sock');
+
+      axios.get('http://localhost:4444/api').then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'direct');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not invoke a beforeRedirect hook inherited from Object.prototype', function (done) {
+    var hijackCalled = false;
+
+    server = http.createServer(function (req, res) {
+      if (req.url === '/start') {
+        res.setHeader('Location', '/final');
+        res.statusCode = 302;
+        res.end();
+        return;
+      }
+      res.end('final');
+    }).listen(4444, function () {
+      Object.prototype.beforeRedirect = function pollutedBeforeRedirect() {
+        hijackCalled = true;
+      };
+
+      axios.get('http://localhost:4444/start', {
+        maxRedirects: 3
+      }).then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'final');
+        assert.equal(hijackCalled, false, 'should not invoke an inherited beforeRedirect hook');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should still honour an explicitly configured beforeRedirect hook', function (done) {
+    var calls = 0;
+
+    server = http.createServer(function (req, res) {
+      if (req.url === '/start') {
+        res.setHeader('Location', '/final');
+        res.statusCode = 302;
+        res.end();
+        return;
+      }
+      res.end('final');
+    }).listen(4444, function () {
+      axios.get('http://localhost:4444/start', {
+        maxRedirects: 3,
+        beforeRedirect: function () {
+          calls += 1;
+        }
+      }).then(function (res) {
+        assert.equal(res.data, 'final');
+        assert.equal(calls, 1, 'the configured beforeRedirect hook must still run');
+        done();
+      }).catch(done);
+    });
+  });
+
+  it('should always pass an own insecureHTTPParser flag to the transport', function (done) {
+    var captured = null;
+    var capturedRequest = null;
+
+    server = http.createServer(function (req, res) {
+      res.end('ok');
+    }).listen(4444, function () {
+      Object.prototype.insecureHTTPParser = true;
+
+      axios.get('http://localhost:4444/', {
+        transport: {
+          request: function (options, handler) {
+            captured = options;
+            capturedRequest = http.request(options, handler);
+            return capturedRequest;
+          }
+        }
+      }).then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'ok');
+        assert.ok(captured, 'the configured transport should have been used');
+        assert.equal(
+          Object.prototype.hasOwnProperty.call(captured, 'insecureHTTPParser'),
+          true,
+          'insecureHTTPParser must be an own property of the request options'
+        );
+        assert.strictEqual(captured.insecureHTTPParser, false);
+        // The own `false` has to survive the copies node makes of the options,
+        // otherwise the inherited `true` would reach the parser.
+        assert.notStrictEqual(
+          capturedRequest.insecureHTTPParser,
+          true,
+          'node must not have enabled the lenient HTTP parser'
+        );
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not enable the lenient HTTP parser through Object.prototype', function (done) {
+    // A response that carries both Content-Length and Transfer-Encoding is
+    // rejected by the strict parser and accepted by the lenient one. The
+    // payload is only discriminating on runtimes shipping llhttp, so the
+    // assertion that actually depends on it is guarded; the invariant that a
+    // polluted prototype cannot change how the response is parsed is checked
+    // on every runtime.
+    var payload = [
+      'HTTP/1.1 200 OK',
+      'Content-Type: text/plain',
+      'Content-Length: 2',
+      'Transfer-Encoding: chunked',
+      '',
+      '2',
+      'ok',
+      '0',
+      '',
+      ''
+    ].join('\r\n');
+
+    function attempt(config) {
+      return axios.get('http://localhost:4444/', config).then(function () {
+        return true;
+      }, function () {
+        return false;
+      });
+    }
+
+    server = net.createServer(function (socket) {
+      socket.once('data', function () {
+        socket.end(payload);
+      });
+    });
+
+    server.listen(4444, function () {
+      var strictOk;
+      var lenientOk;
+
+      attempt().then(function (result) {
+        strictOk = result;
+        return attempt({ insecureHTTPParser: true });
+      }).then(function (result) {
+        lenientOk = result;
+        Object.prototype.insecureHTTPParser = true;
+        return attempt();
+      }).then(function (pollutedOk) {
+        clearPrototypePollution();
+        assert.strictEqual(
+          pollutedOk,
+          strictOk,
+          'an inherited insecureHTTPParser must not change how the response is parsed'
+        );
+        if (lenientOk && !strictOk) {
+          assert.strictEqual(pollutedOk, false, 'the lenient parser must not be reachable via the prototype');
+        }
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not use params or paramsSerializer inherited from Object.prototype', function (done) {
+    var serializerCalled = false;
+
+    server = http.createServer(function (req, res) {
+      res.end(req.url);
+    }).listen(4444, function () {
+      Object.prototype.params = { injected: 'yes' };
+      Object.prototype.paramsSerializer = function pollutedSerializer() {
+        serializerCalled = true;
+        return 'injected=yes';
+      };
+
+      axios.get('http://localhost:4444/x').then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, '/x');
+        assert.equal(serializerCalled, false, 'should not use an inherited paramsSerializer');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  it('should not use an httpAgent inherited from Object.prototype', function (done) {
+    var agentUsed = false;
+    var pollutedAgent = new http.Agent({ keepAlive: false });
+    var originalCreateConnection = pollutedAgent.createConnection;
+
+    pollutedAgent.createConnection = function () {
+      agentUsed = true;
+      return originalCreateConnection.apply(this, arguments);
+    };
+
+    server = http.createServer(function (req, res) {
+      res.end('ok');
+    }).listen(4444, function () {
+      Object.prototype.httpAgent = pollutedAgent;
+
+      axios.get('http://localhost:4444/').then(function (res) {
+        clearPrototypePollution();
+        assert.equal(res.data, 'ok');
+        assert.equal(agentUsed, false, 'should not use an inherited httpAgent');
+        done();
+      }).catch(function (err) {
+        clearPrototypePollution();
+        done(err);
+      });
+    });
+  });
+
+  describe('redirect hooks', function () {
+    function listen(handler) {
+      return new Promise(function (resolve) {
+        var server = http.createServer(handler);
+        server.listen(0, '127.0.0.1', function () {
+          resolve(server);
+        });
+      });
+    }
+
+    // Starts a redirector pointing at a legitimate server plus an attacker
+    // server that records any hit, then runs `pollute` (which receives the
+    // attacker's port) right before the request is sent.
+    function followRedirectWithPollution(pollute) {
+      var legitHits = [];
+      var attackerHits = [];
+      var legit;
+      var attacker;
+      var redirector;
+
+      function closeAll() {
+        [legit, attacker, redirector].forEach(function closeServer(server) {
+          if (server) {
+            server.close();
+          }
+        });
+      }
+
+      // Servers are constructed before any pollution is applied.
+      return listen(function (req, res) {
+        legitHits.push(req.url);
+        res.end('LEGIT');
+      }).then(function (server) {
+        legit = server;
+
+        return listen(function (req, res) {
+          attackerHits.push(req.url);
+          res.end('ATTACKER');
+        });
+      }).then(function (server) {
+        attacker = server;
+
+        return listen(function (req, res) {
+          res.writeHead(302, { Location: 'http://127.0.0.1:' + legit.address().port + '/secret' });
+          res.end();
+        });
+      }).then(function (server) {
+        redirector = server;
+
+        pollute(attacker.address().port);
+
+        return axios.get('http://127.0.0.1:' + redirector.address().port + '/start');
+      }).then(function (response) {
+        try {
+          assert.strictEqual(response.data, 'LEGIT');
+          assert.deepStrictEqual(legitHits, ['/secret']);
+          assert.deepStrictEqual(attackerHits, []);
+        } finally {
+          // Must run even when an assertion throws, or the open servers keep
+          // the test runner alive.
+          closeAll();
+        }
+      }, function (error) {
+        closeAll();
+        throw error;
+      });
+    }
+
+    it('should not use an inherited redirect hook from Object.prototype', function () {
+      return followRedirectWithPollution(function (attackerPort) {
+        // Upstream's adapter only populated its `config` redirect hook when the
+        // caller supplied beforeRedirect, so an inherited function was reachable
+        // and could repoint the redirect at another host.
+        Object.prototype.config = function pollutedHook(options) {
+          options.hostname = '127.0.0.1';
+          options.host = '127.0.0.1';
+          options.port = attackerPort;
+        };
+      });
+    });
+
+    it('should not use an inherited beforeRedirect hook to repoint the redirect', function () {
+      return followRedirectWithPollution(function (attackerPort) {
+        // This version hands a single `beforeRedirect` option to
+        // follow-redirects, which copies the options onto a fresh object, so
+        // an inherited hook would run on every redirect and could repoint it.
+        Object.prototype.beforeRedirect = function pollutedHook(options) {
+          options.hostname = '127.0.0.1';
+          options.host = '127.0.0.1';
+          options.port = attackerPort;
+        };
       });
     });
   });
