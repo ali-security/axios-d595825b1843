@@ -2,6 +2,7 @@ var assert = require('assert');
 var utils = require('../../../lib/utils');
 var mergeConfig = require('../../../lib/core/mergeConfig');
 var dispatchRequest = require('../../../lib/core/dispatchRequest');
+var buildFullPath = require('../../../lib/core/buildFullPath');
 var axios = require('../../../index');
 var AxiosError = require('../../../lib/core/AxiosError');
 
@@ -17,6 +18,8 @@ describe('Prototype Pollution Protection (node)', function () {
     delete Object.prototype.set;
     delete Object.prototype.post;
     delete Object.prototype.data;
+    delete Object.prototype.method;
+    delete Object.prototype.allowAbsoluteUrls;
   }
 
   function stubAdapter(store) {
@@ -395,6 +398,118 @@ describe('Prototype Pollution Protection (node)', function () {
         assert.strictEqual(seenData, undefined);
         done();
       }, done);
+    });
+  });
+
+  describe('request method fallback', function () {
+    var originalAdapter;
+
+    beforeEach(function () {
+      originalAdapter = axios.defaults.adapter;
+    });
+
+    afterEach(function () {
+      axios.defaults.adapter = originalAdapter;
+    });
+
+    it('should not take the default instance method from Object.prototype', function () {
+      var store = {};
+      axios.defaults.adapter = stubAdapter(store);
+
+      Object.prototype.method = 'DELETE';
+
+      return axios.request({ url: 'http://example.com/resource' }).then(function () {
+        assert.strictEqual(store.config.method, 'get');
+      });
+    });
+
+    it('should not take the callable shorthand method from Object.prototype', function () {
+      var store = {};
+      axios.defaults.adapter = stubAdapter(store);
+
+      Object.prototype.method = 'DELETE';
+
+      return axios({ url: 'http://example.com/resource' }).then(function () {
+        assert.strictEqual(store.config.method, 'get');
+      });
+    });
+
+    it('should still honour an explicit request method', function () {
+      var store = {};
+      axios.defaults.adapter = stubAdapter(store);
+
+      Object.prototype.method = 'DELETE';
+
+      return axios.request({ url: 'http://example.com/resource', method: 'put' }).then(function () {
+        assert.strictEqual(store.config.method, 'put');
+      });
+    });
+
+    it('should still honour an instance default method', function () {
+      var store = {};
+
+      var instance = axios.create({ method: 'post', adapter: stubAdapter(store) });
+
+      return instance.request({ url: 'http://example.com/resource' }).then(function () {
+        assert.strictEqual(store.config.method, 'post');
+      });
+    });
+  });
+
+  describe('request allowAbsoluteUrls fallback', function () {
+    var originalAdapter;
+    var hadBaseURL;
+    var originalBaseURL;
+
+    beforeEach(function () {
+      originalAdapter = axios.defaults.adapter;
+      hadBaseURL = utils.hasOwnProp(axios.defaults, 'baseURL');
+      originalBaseURL = axios.defaults.baseURL;
+    });
+
+    afterEach(function () {
+      axios.defaults.adapter = originalAdapter;
+
+      if (hadBaseURL) {
+        axios.defaults.baseURL = originalBaseURL;
+      } else {
+        delete axios.defaults.baseURL;
+      }
+    });
+
+    // The default instance's defaults are an ordinary object, so an inherited
+    // `allowAbsoluteUrls: false` used to be copied onto the request and an
+    // absolute URL was then sent to the configured baseURL server instead.
+    it('should not take the default instance allowAbsoluteUrls from Object.prototype', function () {
+      var store = {};
+      axios.defaults.adapter = stubAdapter(store);
+      axios.defaults.baseURL = 'http://internal.example.com';
+
+      Object.prototype.allowAbsoluteUrls = false;
+
+      return axios.get('http://example.com/resource').then(function () {
+        assert.strictEqual(store.config.allowAbsoluteUrls, true);
+        assert.strictEqual(
+          buildFullPath(store.config.baseURL, store.config.url, store.config.allowAbsoluteUrls),
+          'http://example.com/resource'
+        );
+      });
+    });
+
+    it('should still honour an explicit allowAbsoluteUrls', function () {
+      var store = {};
+      axios.defaults.adapter = stubAdapter(store);
+      axios.defaults.baseURL = 'http://internal.example.com';
+
+      Object.prototype.allowAbsoluteUrls = true;
+
+      return axios.get('http://example.com/resource', { allowAbsoluteUrls: false }).then(function () {
+        assert.strictEqual(store.config.allowAbsoluteUrls, false);
+        assert.strictEqual(
+          buildFullPath(store.config.baseURL, store.config.url, store.config.allowAbsoluteUrls),
+          'http://internal.example.com/http://example.com/resource'
+        );
+      });
     });
   });
 });
