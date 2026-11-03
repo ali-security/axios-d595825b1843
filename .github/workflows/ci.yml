@@ -1,24 +1,52 @@
 name: ci
 
 on:
-  push:
-    branches: [master, 'release/*', dev]
-  pull_request:
-    branches: [master, 'release/*', dev]
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional mocha grep pattern; empty runs the full suite'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     strategy:
+      fail-fast: false
       matrix:
         node-version: [12.x, 14.x, 16.x]
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Setup node
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm install
-      - run: npm test
+      - run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npx mocha 'test/unit/**/*.js' --timeout 30000 --grep "${{ inputs.test-filter }}"
+          else
+            npx grunt test
+          fi
+
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 16.14.0
+      - run: npm ci
+      - run: npm run build
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axios-tgz
+          path: axios-0.27.2.tgz
+          if-no-files-found: error

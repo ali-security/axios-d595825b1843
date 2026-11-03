@@ -1,8 +1,7 @@
 name: 'Close Invalid Issues'
 
 on:
-  issues:
-    types: [opened]
+  workflow_dispatch:
 
 jobs:
   auto_close_issues:
