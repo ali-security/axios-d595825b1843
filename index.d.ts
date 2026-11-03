@@ -101,6 +101,7 @@ export interface AxiosRequestConfig<D = any> {
   maxRedirects?: number;
   beforeRedirect?: (options: Record<string, any>, responseDetails: {headers: Record<string, string>}) => void;
   socketPath?: string | null;
+  allowedSocketPaths?: string | string[] | null;
   httpAgent?: any;
   httpsAgent?: any;
   proxy?: AxiosProxyConfig | false;

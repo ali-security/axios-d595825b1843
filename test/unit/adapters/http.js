@@ -15,6 +15,18 @@ var formidable = require('formidable');
 
 describe('supports http with nodejs', function () {
 
+  function clearPrototypePollution() {
+    delete Object.prototype.auth;
+    delete Object.prototype.username;
+    delete Object.prototype.password;
+    delete Object.prototype.proxy;
+    delete Object.prototype.socketPath;
+    delete Object.prototype.allowedSocketPaths;
+  }
+
+  // Defensive: clear before each test in case another suite left pollution.
+  beforeEach(clearPrototypePollution);
+
   afterEach(function () {
     if (server) {
       server.close();
@@ -27,9 +39,48 @@ describe('supports http with nodejs', function () {
     if (process.env.http_proxy) {
       delete process.env.http_proxy;
     }
+    if (process.env.HTTP_PROXY) {
+      delete process.env.HTTP_PROXY;
+    }
+    if (process.env.https_proxy) {
+      delete process.env.https_proxy;
+    }
     if (process.env.no_proxy) {
       delete process.env.no_proxy;
     }
+    if (process.env.NO_PROXY) {
+      delete process.env.NO_PROXY;
+    }
+    clearPrototypePollution();
+  });
+
+  it('should sanitize request headers containing invalid characters', function (done) {
+    server = http.createServer(function (req, res) {
+      res.setHeader('Content-Type', 'text/plain');
+      res.end(req.headers['x-test']);
+    }).listen(4444, function () {
+      axios.get('http://localhost:4444/', {
+        headers: {
+          'x-test': ' ok\r\nInjected: yes\t'
+        }
+      }).then(function (response) {
+        assert.equal(response.data, 'okInjected: yes');
+        done();
+      }).catch(done);
+    });
+  });
+
+  it('should preserve request error for unavailable host with invalid characters', function (done) {
+    axios.get('http://localhost:1/', {
+      headers: {
+        'x-test': 'ok\r\nInjected: yes'
+      }
+    }).then(function () {
+      done(new Error('request should not succeed'));
+    }).catch(function (error) {
+      assert.notEqual(error.message, 'Invalid character in header content ["x-test"]');
+      done();
+    });
   });
 
   it('should throw an error if the timeout property is not parsable as a number', function (done) {
@@ -549,6 +600,7 @@ describe('supports http with nodejs', function () {
     }).listen(socketName, function () {
       axios({
         socketPath: socketName,
+        allowedSocketPaths: socketName,
         url: '/'
       })
         .then(function (resp) {
@@ -561,6 +613,165 @@ describe('supports http with nodejs', function () {
           done();
         });
     });
+  });
+
+  it('should support sockets without an allowlist', function (done) {
+    // Different sockets for win32 vs darwin/linux
+    var socketName = './test.sock';
+
+    if (process.platform === 'win32') {
+      socketName = '\\\\.\\pipe\\libuv-test';
+    }
+
+    server = net.createServer(function (socket) {
+      socket.on('data', function () {
+        socket.end('HTTP/1.1 200 OK\r\n\r\n');
+      });
+    }).listen(socketName, function () {
+      axios({
+        socketPath: socketName,
+        url: '/'
+      })
+        .then(function (resp) {
+          assert.equal(resp.status, 200);
+          assert.equal(resp.statusText, 'OK');
+          done();
+        })
+        .catch(done);
+    });
+  });
+
+  it('should reject disallowed socket paths before opening the socket', function (done) {
+    var socketName = './test.sock';
+    var openedSocket = false;
+
+    if (process.platform === 'win32') {
+      socketName = '\\\\.\\pipe\\libuv-test';
+    }
+
+    server = net.createServer(function (socket) {
+      openedSocket = true;
+      socket.end('HTTP/1.1 200 OK\r\n\r\n');
+    }).listen(socketName, function () {
+      axios({
+        socketPath: socketName,
+        allowedSocketPaths: './other.sock',
+        url: '/'
+      })
+        .then(function () {
+          done(new Error('request should not succeed'));
+        })
+        .catch(function (err) {
+          assert.equal(err.code, AxiosError.ERR_BAD_OPTION_VALUE);
+          assert.equal(openedSocket, false);
+          done();
+        });
+    });
+  });
+
+  it('should reject socket paths when allowlist is empty', function (done) {
+    var socketName = './test.sock';
+    var openedSocket = false;
+
+    if (process.platform === 'win32') {
+      socketName = '\\\\.\\pipe\\libuv-test';
+    }
+
+    server = net.createServer(function (socket) {
+      openedSocket = true;
+      socket.end('HTTP/1.1 200 OK\r\n\r\n');
+    }).listen(socketName, function () {
+      axios({
+        socketPath: socketName,
+        allowedSocketPaths: [],
+        url: '/'
+      })
+        .then(function () {
+          done(new Error('request should not succeed'));
+        })
+        .catch(function (err) {
+          assert.equal(err.code, AxiosError.ERR_BAD_OPTION_VALUE);
+          assert.equal(openedSocket, false);
+          done();
+        });
+    });
+  });
+
+  it('should inherit and clear socket path allowlists', function (done) {
+    var socketName = './test.sock';
+
+    if (process.platform === 'win32') {
+      socketName = '\\\\.\\pipe\\libuv-test';
+    }
+
+    server = net.createServer(function (socket) {
+      socket.on('data', function () {
+        socket.end('HTTP/1.1 200 OK\r\n\r\n');
+      });
+    }).listen(socketName, function () {
+      var instance = axios.create({
+        allowedSocketPaths: socketName
+      });
+
+      instance({
+        socketPath: socketName,
+        url: '/'
+      })
+        .then(function (resp) {
+          assert.equal(resp.status, 200);
+
+          return axios.create({
+            allowedSocketPaths: []
+          })({
+            socketPath: socketName,
+            allowedSocketPaths: null,
+            url: '/'
+          });
+        })
+        .then(function (resp) {
+          assert.equal(resp.status, 200);
+          done();
+        })
+        .catch(done);
+    });
+  });
+
+  it('should reject invalid socket path options', function (done) {
+    axios({
+      socketPath: {},
+      url: '/'
+    })
+      .then(function () {
+        done(new Error('request should not succeed'));
+      })
+      .catch(function (err) {
+        assert.equal(err.code, AxiosError.ERR_BAD_OPTION_VALUE);
+
+        return axios({
+          socketPath: './test.sock',
+          allowedSocketPaths: {},
+          url: '/'
+        });
+      })
+      .then(function () {
+        done(new Error('request should not succeed'));
+      })
+      .catch(function (err) {
+        assert.equal(err.code, AxiosError.ERR_BAD_OPTION_VALUE);
+
+        return axios({
+          socketPath: './test.sock',
+          allowedSocketPaths: ['./test.sock', {}],
+          url: '/'
+        });
+      })
+      .then(function () {
+        done(new Error('request should not succeed'));
+      })
+      .catch(function (err) {
+        assert.equal(err.code, AxiosError.ERR_BAD_OPTION_VALUE);
+        done();
+      });
   });
 
   it('should support streams', function (done) {
@@ -853,6 +1064,147 @@ describe('supports http with nodejs', function () {
     });
   });
 
+  it('should not use proxy for localhost with trailing dot when listed in no_proxy', function (done) {
+    var proxyRequests = 0;
+
+    proxy = http.createServer(function (request, response) {
+      proxyRequests += 1;
+      response.end('proxied');
+    }).listen(4000, function () {
+      process.env.http_proxy = 'http://localhost:4000/';
+      process.env.HTTP_PROXY = 'http://localhost:4000/';
+      process.env.no_proxy = 'localhost,127.0.0.1,::1';
+      process.env.NO_PROXY = 'localhost,127.0.0.1,::1';
+
+      axios.get('http://localhost.:1/', {
+        timeout: 100
+      }).then(function () {
+        done(new Error('request should not succeed'));
+      }).catch(function () {
+        assert.equal(proxyRequests, 0, 'should not use proxy for localhost with trailing dot');
+        done();
+      });
+    });
+  });
+
+  it('should not use proxy for bracketed IPv6 loopback when listed in no_proxy', function (done) {
+    var proxyRequests = 0;
+
+    proxy = http.createServer(function (request, response) {
+      proxyRequests += 1;
+      response.end('proxied');
+    }).listen(4000, function () {
+      process.env.http_proxy = 'http://localhost:4000/';
+      process.env.HTTP_PROXY = 'http://localhost:4000/';
+      process.env.no_proxy = 'localhost,127.0.0.1,::1';
+      process.env.NO_PROXY = 'localhost,127.0.0.1,::1';
+
+      axios.get('http://[::1]:1/', {
+        timeout: 100
+      }).then(function () {
+        done(new Error('request should not succeed'));
+      }).catch(function () {
+        assert.equal(proxyRequests, 0, 'should not use proxy for IPv6 loopback');
+        done();
+      });
+    });
+  });
+
+  it('should not use proxy for 127.0.0.1 when no_proxy is localhost', function (done) {
+    var proxyRequests = 0;
+
+    proxy = http.createServer(function (request, response) {
+      proxyRequests += 1;
+      response.end('proxied');
+    }).listen(4000, function () {
+      process.env.http_proxy = 'http://localhost:4000/';
+      process.env.HTTP_PROXY = 'http://localhost:4000/';
+      process.env.no_proxy = 'localhost';
+      process.env.NO_PROXY = 'localhost';
+
+      axios.get('http://127.0.0.1:1/', {
+        timeout: 100
+      }).then(function () {
+        done(new Error('request should not succeed'));
+      }).catch(function () {
+        assert.equal(proxyRequests, 0, 'should not use proxy for IPv4 loopback alias');
+        done();
+      });
+    });
+  });
+
+  it('should not use proxy for [::1] when no_proxy is localhost', function (done) {
+    var proxyRequests = 0;
+
+    proxy = http.createServer(function (request, response) {
+      proxyRequests += 1;
+      response.end('proxied');
+    }).listen(4000, function () {
+      process.env.http_proxy = 'http://localhost:4000/';
+      process.env.HTTP_PROXY = 'http://localhost:4000/';
+      process.env.no_proxy = 'localhost';
+      process.env.NO_PROXY = 'localhost';
+
+      axios.get('http://[::1]:1/', {
+        timeout: 100
+      }).then(function () {
+        done(new Error('request should not succeed'));
+      }).catch(function () {
+        assert.equal(proxyRequests, 0, 'should not use proxy for IPv6 loopback alias');
+        done();
+      });
+    });
+  });
+
+  // `0.0.0.0` is an alias for the local host, so a `no_proxy=localhost` policy
+  // has to cover it - otherwise a request that the operator believes is local
+  // is silently routed through (and readable by) the proxy.
+  it('should not use proxy for 0.0.0.0 when no_proxy is localhost', function (done) {
+    var proxyRequests = 0;
+
+    proxy = http.createServer(function (request, response) {
+      proxyRequests += 1;
+      response.end('proxied');
+    }).listen(4000, function () {
+      process.env.http_proxy = 'http://localhost:4000/';
+      process.env.HTTP_PROXY = 'http://localhost:4000/';
+      process.env.no_proxy = 'localhost';
+      process.env.NO_PROXY = 'localhost';
+
+      axios.get('http://0.0.0.0:1/', {
+        timeout: 100
+      }).then(function () {
+        done(new Error('request should not succeed'));
+      }).catch(function () {
+        assert.equal(proxyRequests, 0, 'should not use proxy for the unspecified IPv4 address');
+        done();
+      });
+    });
+  });
+
+  it('should not use proxy for IPv4-mapped IPv6 host when the IPv4 alias is in no_proxy', function (done) {
+    var proxyRequests = 0;
+
+    proxy = http.createServer(function (request, response) {
+      proxyRequests += 1;
+      response.end('proxied');
+    }).listen(4000, function () {
+      process.env.http_proxy = 'http://localhost:4000/';
+      process.env.HTTP_PROXY = 'http://localhost:4000/';
+      process.env.no_proxy = '127.0.0.1';
+      process.env.NO_PROXY = '127.0.0.1';
+
+      axios.get('http://[::ffff:7f00:1]:1/', {
+        timeout: 100
+      }).then(function () {
+        done(new Error('request should not succeed'));
+      }).catch(function () {
+        assert.equal(proxyRequests, 0, 'should not use proxy for IPv4-mapped IPv6 loopback alias');
+        done();
+      });
+    });
+  });
+
   it('should use proxy for domains not in no_proxy', function (done) {
     server = http.createServer(function (req, res) {
       res.setHeader('Content-Type', 'text/html; charset=UTF-8');
@@ -1010,6 +1362,81 @@ describe('supports http with nodejs', function () {
           var base64 = Buffer.from('user:pass', 'utf8').toString('base64');
           assert.equal(res.data, 'Basic ' + base64, 'should authenticate to the proxy');
           done();
+        });
+      });
+    });
+  });
+
+  it('should not use inherited proxy auth credentials', function (done) {
+    server = http.createServer(function (req, res) {
+      res.end();
+    }).listen(4444, function () {
+      proxy = http.createServer(function (request, response) {
+        var parsed = url.parse(request.url);
+        // Null-prototype so the pollution below cannot leak into the request
+        // this test proxy makes on behalf of the client.
+        var opts = Object.create(null);
+        opts.host = parsed.hostname;
+        opts.port = parsed.port;
+        opts.path = parsed.path;
+        opts.auth = undefined;
+        var proxyAuth = request.headers['proxy-authorization'];
+
+        http.get(opts, function (res) {
+          res.on('data', function () {});
+          res.on('end', function () {
+            response.setHeader('Content-Type', 'text/html; charset=UTF-8');
+            response.end(proxyAuth || '');
+          });
+        });
+
+      }).listen(4000, function () {
+        Object.prototype.auth = {};
+        Object.prototype.username = 'polluted-user';
+        Object.prototype.password = 'polluted-pass';
+
+        axios.get('http://localhost:4444/', {
+          proxy: {
+            host: 'localhost',
+            port: 4000
+          }
+        }).then(function (res) {
+          clearPrototypePollution();
+          assert.equal(res.data, '', 'should not send inherited credentials to the proxy');
+          done();
+        }).catch(function (err) {
+          clearPrototypePollution();
+          done(err);
+        });
+      });
+    });
+  });
+
+  it('should not use an inherited proxy destination', function (done) {
+    var proxyRequests = 0;
+
+    server = http.createServer(function (req, res) {
+      res.end('direct');
+    }).listen(4444, function () {
+      proxy = http.createServer(function (request, response) {
+        proxyRequests += 1;
+        response.end('proxied');
+      }).listen(4000, function () {
+        Object.prototype.proxy = {
+          host: 'localhost',
+          port: 4000
+        };
+
+        axios.get('http://localhost:4444/', {
+          maxRedirects: 0
+        }).then(function (res) {
+          clearPrototypePollution();
+          assert.equal(res.data, 'direct');
+          assert.equal(proxyRequests, 0, 'should not route the request through an inherited proxy');
+          done();
+        }).catch(function (err) {
+          clearPrototypePollution();
+          done(err);
         });
       });
     });
