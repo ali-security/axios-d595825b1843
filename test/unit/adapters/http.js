@@ -2125,5 +2125,112 @@ describe('supports http with nodejs', function () {
     });
   });
 
+  describe('prototype pollution (GHSA-6chq-wfr3-2hj9)', function () {
+    var pollutedKeys = ['getHeaders', 'append', 'pipe', 'on', 'once'];
+    var toStringTagSym = Symbol.toStringTag;
+    var originalToString = Object.prototype.toString;
+
+    function pollute() {
+      Object.prototype[toStringTagSym] = 'FormData';
+      Object.prototype.append = function () {};
+      Object.prototype.getHeaders = function () {
+        return {
+          'x-injected': 'attacker',
+          'authorization': 'Bearer ATTACKER_TOKEN'
+        };
+      };
+      Object.prototype.pipe = function (d) { if (d && d.end) d.end(); return d; };
+      Object.prototype.on = function () { return this; };
+      Object.prototype.once = function () { return this; };
+    }
+
+    function cleanup() {
+      for (var i = 0; i < pollutedKeys.length; i++) delete Object.prototype[pollutedKeys[i]];
+      delete Object.prototype[toStringTagSym];
+      // `toString` is a builtin - restore it instead of deleting it.
+      Object.prototype.toString = originalToString;
+    }
+
+    // Safety net: if a request hangs and mocha times out, `finish()` never runs.
+    afterEach(cleanup);
+
+    it('should not merge prototype-polluted getHeaders into outgoing request', function (done) {
+      var receivedHeaders;
+      server = http.createServer(function (req, res) {
+        receivedHeaders = req.headers;
+        res.end('{}');
+      }).listen(4444, function () {
+        pollute();
+        var finish = function (requestError) {
+          cleanup();
+          try {
+            assert.ok(
+              receivedHeaders,
+              'request must reach server to prove polluted headers were not merged' +
+                (requestError ? ' (request errored: ' + requestError.message + ')' : '')
+            );
+            assert.strictEqual(receivedHeaders['x-injected'], undefined);
+            assert.notStrictEqual(receivedHeaders['authorization'], 'Bearer ATTACKER_TOKEN');
+            done();
+          } catch (e) {
+            done(e);
+          }
+        };
+        axios.post('http://localhost:4444/', { userId: 42 }, {
+          headers: { 'Authorization': 'Bearer VALID_USER_TOKEN' }
+        }).then(function () {
+          finish();
+        }).catch(function (err) {
+          finish(err);
+        });
+      });
+    });
+
+    it('should not merge polluted getHeaders when Object.prototype.toString spoofs FormData', function (done) {
+      var receivedHeaders;
+      server = http.createServer(function (req, res) {
+        receivedHeaders = req.headers;
+        res.end('{}');
+      }).listen(4444, function () {
+        // A plain JSON payload plus a polluted `toString` was enough to make the
+        // pre-fix `isFormData` accept it, so `getHeaders()` - also taken from the
+        // polluted prototype - was merged straight into the outgoing headers.
+        Object.prototype.toString = function () { return '[object FormData]'; };
+        Object.prototype.getHeaders = function () {
+          return {
+            'x-injected': 'attacker',
+            'authorization': 'Bearer ATTACKER_TOKEN'
+          };
+        };
+        Object.prototype.pipe = function (d) { if (d && d.end) d.end(); return d; };
+        Object.prototype.on = function () { return this; };
+        Object.prototype.once = function () { return this; };
+
+        var finish = function (requestError) {
+          cleanup();
+          try {
+            assert.ok(
+              receivedHeaders,
+              'request must reach server to prove polluted headers were not merged' +
+                (requestError ? ' (request errored: ' + requestError.message + ')' : '')
+            );
+            assert.strictEqual(receivedHeaders['x-injected'], undefined);
+            assert.strictEqual(receivedHeaders['authorization'], 'Bearer VALID_USER_TOKEN');
+            done();
+          } catch (e) {
+            done(e);
+          }
+        };
+        axios.post('http://localhost:4444/', { userId: 42 }, {
+          headers: { 'Authorization': 'Bearer VALID_USER_TOKEN' }
+        }).then(function () {
+          finish();
+        }).catch(function (err) {
+          finish(err);
+        });
+      });
+    });
+  });
+
 });
 
