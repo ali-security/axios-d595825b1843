@@ -173,4 +173,143 @@ describe('xsrf', function() {
       });
     });
   });
+
+  // GHSA-xx6v-rp6x-q39c: `withXSRFToken` used to be evaluated with a loose
+  // truthy test, so ANY truthy non-boolean value - `1`, `'false'`, `{}`, `[]`,
+  // or a resolver returning one of those - short-circuited the same-origin
+  // guard and leaked the XSRF cookie to a cross-origin host. Only an explicit
+  // boolean `true` may skip that guard.
+  describe('withXSRFToken strict boolean check', function() {
+    var token = '12345';
+
+    beforeEach(function() {
+      document.cookie = axios.defaults.xsrfCookieName + '=' + token;
+    });
+
+    afterEach(function() {
+      delete Object.prototype.withXSRFToken;
+    });
+
+    it('should not set xsrf header for cross origin when withXSRFToken is the number 1', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: 1
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when withXSRFToken is a non-empty string', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: 'true'
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when withXSRFToken is the string "false"', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: 'false'
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when withXSRFToken is an object', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: {}
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when withXSRFToken is an array', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: []
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when the resolver returns a truthy number', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: function() { return 1; }
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when the resolver returns a non-empty string', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: function() { return 'yes'; }
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should not set xsrf header for cross origin when withXSRFToken is inherited from Object.prototype',
+      function(done) {
+        Object.prototype.withXSRFToken = 1;
+
+        axios('http://example.com/');
+
+        getAjaxRequest().then(function(request) {
+          expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+          done();
+        });
+      });
+
+    it('should not set xsrf header for cross origin when Object.prototype.withXSRFToken is true', function(done) {
+      Object.prototype.withXSRFToken = true;
+
+      axios('http://example.com/');
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(undefined);
+        done();
+      });
+    });
+
+    it('should still set xsrf header for cross origin when the resolver returns boolean true', function(done) {
+      axios('http://example.com/', {
+        withXSRFToken: function() { return true; }
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(token);
+        done();
+      });
+    });
+
+    it('should still set xsrf header for the same origin when withXSRFToken is a truthy non-boolean', function(done) {
+      axios('/foo', {
+        withXSRFToken: 1
+      });
+
+      getAjaxRequest().then(function(request) {
+        expect(request.requestHeaders[axios.defaults.xsrfHeaderName]).toEqual(token);
+        done();
+      });
+    });
+  });
 });
